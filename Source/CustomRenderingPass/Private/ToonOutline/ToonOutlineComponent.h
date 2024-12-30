@@ -34,7 +34,7 @@ public:
 
 private:
 
-	UPROPERTY(VisibleInstanceOnly)
+	UPROPERTY(VisibleAnywhere, Category = "ToonLit")
 	TWeakObjectPtr<USkeletalMeshComponent> SkeletalMeshComponent;
 };
 
