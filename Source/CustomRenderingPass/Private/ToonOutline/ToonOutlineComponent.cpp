@@ -1,5 +1,9 @@
 ﻿#include "ToonOutlineComponent.h"
 
+#include "GPUSkinVertexFactory.h"
+#include "SkeletalRenderPublic.h"
+#include "Rendering/SkeletalMeshRenderData.h"
+
 UToonOutlineComponent::UToonOutlineComponent(const FObjectInitializer& ObjectInitializer)
 {
 #if UE_SERVER
@@ -27,8 +31,34 @@ void UToonOutlineComponent::OnAttachmentChanged()
 
 FPrimitiveSceneProxy* UToonOutlineComponent::CreateSceneProxy()
 {
-	if (SkeletalMeshComponent.IsValid())
-		return SkeletalMeshComponent.Get()->GetSceneProxy();
+	if (!SkeletalMeshComponent.IsValid())
+		return nullptr;
+
+	auto* SkeletalMesh = SkeletalMeshComponent.Get();
 	
-	return nullptr;
+	FSkeletalMeshSceneProxy* Result = nullptr;
+	FSkeletalMeshRenderData* SkelMeshRenderData = SkeletalMesh->GetSkeletalMeshRenderData();
+
+	if (CheckPSOPrecachingAndBoostPriority() && GetPSOPrecacheProxyCreationStrategy() == EPSOPrecacheProxyCreationStrategy::DelayUntilPSOPrecached)
+	{
+		return nullptr;
+	}
+
+	// Only create a scene proxy for rendering if properly initialized
+	if (SkelMeshRenderData &&
+		SkelMeshRenderData->LODRenderData.IsValidIndex(SkeletalMesh->GetPredictedLODLevel()) &&
+		!SkeletalMesh->bHideSkin &&
+		SkeletalMesh->MeshObject)
+	{
+		// Only create a scene proxy if the bone count being used is supported, or if we don't have a skeleton (this is the case with destructibles)
+		int32 MinLODIndex = SkeletalMesh->ComputeMinLOD();
+		int32 MaxBonesPerChunk = SkelMeshRenderData->GetMaxBonesPerSection(MinLODIndex);
+		int32 MaxSupportedNumBones = SkeletalMesh->MeshObject->IsCPUSkinned() ? MAX_int32 : FGPUBaseSkinVertexFactory::GetMaxGPUSkinBones();
+		if (MaxBonesPerChunk <= MaxSupportedNumBones)
+		{
+			Result = ::new FToonOutlineMeshSceneProxy(SkeletalMesh, SkelMeshRenderData);
+		}
+	}
+	
+	return Result;
 }

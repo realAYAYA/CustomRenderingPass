@@ -39,7 +39,10 @@ public class CustomRenderingPass : ModuleRules
 				// ... add private dependencies that you statically link with here ...	
 				
 				"RenderCore",
-				"Projects"
+				"Renderer",
+				"RHI",
+				"Projects",
+				"DeveloperSettings"
 			}
 			);
 		

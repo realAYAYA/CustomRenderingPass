@@ -1,18 +1,150 @@
 #include "ToonOutlineRendering.h"
 
+#include "CustomRenderingSetting.h"
 #include "MeshPassProcessor.inl"
 #include "SimpleMeshDrawCommandPass.h"
+#include "ToonOutlineComponent.h"
+#include "Materials/MaterialRenderProxy.h"
 #include "Runtime/Renderer/Private/ScenePrivate.h"
-#include "Runtime/Renderer/Private/SceneRendering.h"
 
-//IMPLEMENT_SHADERPIPELINE_TYPE_VSPS(BackfaceOutlinePipeline, FToonOutlineVS, FToonOutlinePS, true);
-IMPLEMENT_MATERIAL_SHADER_TYPE(, FToonOutlineVS, TEXT("/Engine/Private/ToonLit/ToonLitOutLine.usf"), TEXT("MainVS"), SF_Vertex);
-IMPLEMENT_MATERIAL_SHADER_TYPE(, FToonOutlinePS, TEXT("/Engine/Private/ToonLit/ToonLitOutLine.usf"), TEXT("MainPS"), SF_Pixel);
+BEGIN_SHADER_PARAMETER_STRUCT(FToonOutlineMeshPassParameters,)
+	SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
+	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FSceneUniformParameters, Scene)
+	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FInstanceCullingGlobalUniforms, InstanceCulling)
+	SHADER_PARAMETER_STRUCT_INCLUDE(FInstanceCullingDrawParams, InstanceCullingDrawParams)
+	RENDER_TARGET_BINDING_SLOTS()
+END_SHADER_PARAMETER_STRUCT()
 
-/**
- * Mesh Pass Processor
- * 
- */
+FInt32Range GetDynamicMeshElementRange(const FViewInfo& View, uint32 PrimitiveIndex)
+{
+	// DynamicMeshEndIndices contains valid values only for visible primitives with bDynamicRelevance.
+	if (View.PrimitiveVisibilityMap[PrimitiveIndex])
+	{
+		const FPrimitiveViewRelevance& ViewRelevance = View.PrimitiveViewRelevanceMap[PrimitiveIndex];
+		if (ViewRelevance.bDynamicRelevance)
+			return FInt32Range(View.DynamicMeshElementRanges[PrimitiveIndex].X, View.DynamicMeshElementRanges[PrimitiveIndex].Y);
+	}
+
+	return FInt32Range::Empty();
+}
+
+// Gather & Flitter MeshBatch from Scene->Primitives.
+void HandleToonOutlineMeshProcessor(FToonOutlineMeshPassProcessor& MeshProcessor, FScene* Scene, const FViewInfo* View)
+{
+	for (int32 PrimitiveIndex = 0; PrimitiveIndex < Scene->Primitives.Num(); PrimitiveIndex++)
+	{
+		const FPrimitiveSceneInfo* PrimitiveSceneInfo = Scene->Primitives[PrimitiveIndex];
+
+		if (!View->PrimitiveVisibilityMap[PrimitiveSceneInfo->GetIndex()])
+			continue;
+
+		const FPrimitiveViewRelevance& ViewRelevance = View->PrimitiveViewRelevanceMap[PrimitiveSceneInfo->GetIndex()];
+
+		if (ViewRelevance.bRenderInMainPass && ViewRelevance.bStaticRelevance)
+		{
+			for (int32 StaticMeshIdx = 0; StaticMeshIdx < PrimitiveSceneInfo->StaticMeshes.Num(); StaticMeshIdx++)
+			{
+				const FStaticMeshBatch& StaticMesh = PrimitiveSceneInfo->StaticMeshes[StaticMeshIdx];
+				if (View->StaticMeshVisibilityMap[StaticMesh.Id])
+				{
+					constexpr uint64 DefaultBatchElementMask = ~0ul;
+					MeshProcessor.AddMeshBatch(StaticMesh, DefaultBatchElementMask, StaticMesh.PrimitiveSceneInfo->Proxy);
+				}
+			}
+		}
+
+		if (ViewRelevance.bRenderInMainPass && ViewRelevance.bDynamicRelevance)
+		{
+			const FInt32Range MeshBatchRange = GetDynamicMeshElementRange(*View, PrimitiveSceneInfo->GetIndex());
+			for (int32 MeshBatchIndex = MeshBatchRange.GetLowerBoundValue(); MeshBatchIndex < MeshBatchRange.GetUpperBoundValue(); ++MeshBatchIndex)
+			{
+				const FMeshBatchAndRelevance& MeshAndRelevance = View->DynamicMeshElements[MeshBatchIndex];
+				constexpr uint64 BatchElementMask = ~0ull;
+				MeshProcessor.AddMeshBatch(*MeshAndRelevance.Mesh, BatchElementMask, MeshAndRelevance.PrimitiveSceneProxy);
+			}
+		}
+	}
+}
+
+void FToonOutlineRenderer::Render(FPostOpaqueRenderParameters& Parameters) const
+{
+	if (!UCustomRenderingSetting::Get()->bEnableToonOutline)
+		return;
+	
+	// Reference search: "RendererModule.RenderPostOpaqueExtensions(GraphBuilder, Views, SceneTextures);"
+	auto* GraphBuilder = Parameters.GraphBuilder;
+	auto* View = Parameters.View;
+	auto* ColorTexture =  Parameters.ColorTexture;
+	auto* DepthTexture = Parameters.DepthTexture;
+	//auto* VelocityTexture = Parameters.VelocityTexture;
+	//auto* NormalTexture = Parameters.NormalTexture;
+	
+	/*if (!View || View->Family->Scene == nullptr)
+	{
+		UE_LOG(LogTemp, Log, TEXT("%s - View.Family->Scene is NULL!"), *FString(__FUNCTION__));
+		return;
+	}*/
+
+	auto* Scene = static_cast<FScene*>(View->Family->Scene);
+	/*if (!Scene)
+	{
+		UE_LOG(LogShaders, Log, TEXT("%s - View.Family->FScene is NULL!"), *FString(__FUNCTION__));
+		return;
+	}*/
+	
+	// Render targets bindings should remain constant at this point.
+	FRenderTargetBindingSlots BindingSlots;
+	BindingSlots[0] = FRenderTargetBinding(ColorTexture, ERenderTargetLoadAction::ELoad);
+	BindingSlots.DepthStencil = FDepthStencilBinding(
+		DepthTexture,
+		ERenderTargetLoadAction::ENoAction,
+		ERenderTargetLoadAction::ELoad,
+		FExclusiveDepthStencil::DepthWrite_StencilNop);
+
+	FToonOutlineMeshPassParameters* PassParameters = GraphBuilder->AllocParameters<FToonOutlineMeshPassParameters>();
+	PassParameters->View = View->ViewUniformBuffer;
+	PassParameters->RenderTargets = BindingSlots;
+	PassParameters->Scene = GetSceneUniformBufferRef(*GraphBuilder, *View);
+	PassParameters->InstanceCulling = FInstanceCullingContext::CreateDummyInstanceCullingUniformBuffer(*GraphBuilder);
+
+	// Todo 写入速度缓冲
+
+	FIntRect ViewportRect = View->ViewRect;
+	FIntRect ScissorRect = FIntRect(FIntPoint(EForceInit::ForceInitToZero), ColorTexture->Desc.Extent);
+
+	GraphBuilder->AddPass(
+		RDG_EVENT_NAME("ToonOutlinePass"),
+		PassParameters,
+		ERDGPassFlags::Raster,
+		[this, View, ViewportRect, ScissorRect, Scene](FRHICommandList& RHICmdList)
+		{
+			RHICmdList.SetViewport(
+				ViewportRect.Min.X, ViewportRect.Min.Y, 0.0f,
+				ViewportRect.Max.X, ViewportRect.Max.Y, 1.0f);
+
+			RHICmdList.SetScissorRect(
+				true,
+				ScissorRect.Min.X >= ViewportRect.Min.X ? ScissorRect.Min.X : ViewportRect.Min.X,
+				ScissorRect.Min.Y >= ViewportRect.Min.Y ? ScissorRect.Min.Y : ViewportRect.Min.Y,
+				ScissorRect.Max.X <= ViewportRect.Max.X ? ScissorRect.Max.X : ViewportRect.Max.X,
+				ScissorRect.Max.Y <= ViewportRect.Max.Y ? ScissorRect.Max.Y : ViewportRect.Max.Y);
+			
+			DrawDynamicMeshPass(*View, RHICmdList, [Scene, View](FDynamicPassMeshDrawListContext* DynamicMeshPassContext)
+			{
+				FMeshPassProcessorRenderState DrawRenderState;
+				DrawRenderState.SetDepthStencilState(TStaticDepthStencilState<true, CF_LessEqual>().GetRHI());
+				FToonOutlineMeshPassProcessor MeshProcessor(Scene, View, DrawRenderState, DynamicMeshPassContext);
+				HandleToonOutlineMeshProcessor(MeshProcessor, Scene, View);
+			});
+		});
+}
+
+
+
+
+IMPLEMENT_MATERIAL_SHADER_TYPE(, FToonOutlineVS, TEXT("/Plugin/CustomRenderingPass/ToonLitOutLine.usf"), TEXT("MainVS"), SF_Vertex);
+IMPLEMENT_MATERIAL_SHADER_TYPE(, FToonOutlinePS, TEXT("/Plugin/CustomRenderingPass/ToonLitOutLine.usf"), TEXT("MainPS"), SF_Pixel);
+
 FToonOutlineMeshPassProcessor::FToonOutlineMeshPassProcessor(
 	const FScene* Scene,
 	const FSceneView* InViewIfDynamicMeshCommand,
@@ -21,7 +153,6 @@ FToonOutlineMeshPassProcessor::FToonOutlineMeshPassProcessor(
 	: FMeshPassProcessor(EMeshPass::Num, Scene, Scene->GetFeatureLevel(), InViewIfDynamicMeshCommand, InDrawListContext),
 	  PassDrawRenderState(InPassDrawRenderState)
 {
-	//PassDrawRenderState.SetViewUniformBuffer(Scene->UniformBuffers.ViewUniformBuffer);
 	if (PassDrawRenderState.GetDepthStencilState() == nullptr)
 		PassDrawRenderState.SetDepthStencilState(TStaticDepthStencilState<false, CF_NotEqual>().GetRHI());
 	if (PassDrawRenderState.GetBlendState() == nullptr)
@@ -34,16 +165,20 @@ void FToonOutlineMeshPassProcessor::AddMeshBatch(
 	const FPrimitiveSceneProxy* PrimitiveSceneProxy,
 	int32 StaticMeshId)
 {
+	auto Ptr = UECasts_Private::DynamicCast<const FToonOutlineMeshSceneProxy*>(PrimitiveSceneProxy);
+	if (Ptr && Ptr->IsMe)
+		return;// Filter
+	
 	const FMaterialRenderProxy* MaterialRenderProxy = MeshBatch.MaterialRenderProxy;
 	const FMaterialRenderProxy* FallBackMaterialRenderProxyPtr = nullptr;
 	const FMaterial& Material = MaterialRenderProxy->GetMaterialWithFallback(Scene->GetFeatureLevel(), FallBackMaterialRenderProxyPtr);
 
-	const UMaterialInterface* MaterialInterface = Material.GetMaterialInterface()->GetOutlineMaterial();
-	if (!MaterialInterface)
+	auto* Mat = UCustomRenderingSetting::Get()->ToonOutlineMaterial.LoadSynchronous();
+	if (Mat == nullptr)
 		return;
 	
-	const FMaterial* OutlineMaterial = MaterialInterface->GetMaterialResource(Scene->GetFeatureLevel());
-	const FMaterialRenderProxy* OutlineMaterialRenderProxy = MaterialInterface->GetRenderProxy();
+	const FMaterial* OutlineMaterial = Mat->GetMaterialResource(Scene->GetFeatureLevel());
+	const FMaterialRenderProxy* OutlineMaterialRenderProxy = Mat->GetRenderProxy();
 	if (!OutlineMaterial || !OutlineMaterialRenderProxy)
 		return;
 
@@ -78,11 +213,7 @@ bool FToonOutlineMeshPassProcessor::Process(
 {
 	const FVertexFactory* VertexFactory = MeshBatch.VertexFactory;
 
-	TMeshProcessorShaders<
-		FToonOutlineVS,
-		FToonOutlinePS> ToonOutlineShaders;
-
-	// Try Get Shader.
+	TMeshProcessorShaders<FToonOutlineVS, FToonOutlinePS> ToonOutlineShaders;
 	{
 		FMaterialShaderTypes ShaderTypes;
 		ShaderTypes.AddShaderType<FToonOutlineVS>();
@@ -102,15 +233,12 @@ bool FToonOutlineMeshPassProcessor::Process(
 	}
 
 	FToonOutlinePassShaderElementData ShaderElementData;
-	ShaderElementData.InitializeMeshMaterialData(ViewIfDynamicMeshCommand, PrimitiveSceneProxy, MeshBatch, StaticMeshId,
-	                                             false);
-
+	ShaderElementData.InitializeMeshMaterialData(ViewIfDynamicMeshCommand, PrimitiveSceneProxy, MeshBatch, StaticMeshId, false);
 	const FMeshDrawCommandSortKey SortKey = CalculateMeshStaticSortKey(ToonOutlineShaders.VertexShader, ToonOutlineShaders.PixelShader);
-
-	// !
+	
 	PassDrawRenderState.SetDepthStencilState(
 		TStaticDepthStencilState<
-			true, CF_GreaterEqual, // Enable DepthTest, It reverse about OpenGL(which is less)
+			true, CF_GreaterEqual, // Enable DepthTest, it opposites to OpenGL(which is less)
 			false, CF_Never, SO_Keep, SO_Keep, SO_Keep,
 			false, CF_Never, SO_Keep, SO_Keep, SO_Keep, // enable stencil test when cull back
 			0x00, // disable stencil read
@@ -136,133 +264,7 @@ bool FToonOutlineMeshPassProcessor::Process(
 	return true;
 }
 
-FInt32Range GetDynamicMeshElementRange(const FViewInfo& View, uint32 PrimitiveIndex)
-{
-	// DynamicMeshEndIndices contains valid values only for visible primitives with bDynamicRelevance.
-	if (View.PrimitiveVisibilityMap[PrimitiveIndex])
-	{
-		const FPrimitiveViewRelevance& ViewRelevance = View.PrimitiveViewRelevanceMap[PrimitiveIndex];
-		if (ViewRelevance.bDynamicRelevance)
-		{
-
-			return FInt32Range(View.DynamicMeshElementRanges[PrimitiveIndex].X, View.DynamicMeshElementRanges[PrimitiveIndex].Y);
-		}
-	}
-
-	return FInt32Range::Empty();
-}
-
-BEGIN_SHADER_PARAMETER_STRUCT(FToonOutlineMeshPassParameters,)
-	SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
-	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FSceneUniformParameters, Scene)
-	SHADER_PARAMETER_STRUCT_INCLUDE(FInstanceCullingDrawParams, InstanceCullingDrawParams)
-	RENDER_TARGET_BINDING_SLOTS()
-END_SHADER_PARAMETER_STRUCT()
-
-/**
- * Render()
- */
-void FSceneRenderer::RenderToonOutlinePass(FRDGBuilder& GraphBuilder, FRDGTextureRef SceneColorTexture)
-{
-	for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ++ViewIndex)
-	{
-		FViewInfo& View = Views[ViewIndex];
-
-		if (View.Family->Scene == nullptr)
-		{
-			UE_LOG(LogShaders, Log, TEXT("%s - View.Family->Scene is NULL!"), *FString(__FUNCTION__));
-			continue;
-		}
-
-		FSimpleMeshDrawCommandPass* SimpleMeshPass = GraphBuilder.AllocObject<FSimpleMeshDrawCommandPass>(View, nullptr);
-
-		FMeshPassProcessorRenderState DrawRenderState;
-		DrawRenderState.SetDepthStencilState(TStaticDepthStencilState<true, CF_LessEqual>().GetRHI());
-
-		FToonOutlineMeshPassProcessor MeshProcessor(
-			Scene,
-			&View,
-			DrawRenderState,
-			SimpleMeshPass->GetDynamicPassMeshDrawListContext());
-
-		// Gather & Flitter MeshBatch from Scene->Primitives.
-		for (int32 PrimitiveIndex = 0; PrimitiveIndex < Scene->Primitives.Num(); PrimitiveIndex++)
-		{
-			const FPrimitiveSceneInfo* PrimitiveSceneInfo = Scene->Primitives[PrimitiveIndex];
-
-			if (!View.PrimitiveVisibilityMap[PrimitiveSceneInfo->GetIndex()])
-				continue;
-
-			const FPrimitiveViewRelevance& ViewRelevance = View.PrimitiveViewRelevanceMap[PrimitiveSceneInfo->GetIndex()];
-
-			if (ViewRelevance.bRenderInMainPass && ViewRelevance.bStaticRelevance)
-			{
-				for (int32 StaticMeshIdx = 0; StaticMeshIdx < PrimitiveSceneInfo->StaticMeshes.Num(); StaticMeshIdx++)
-				{
-					const FStaticMeshBatch& StaticMesh = PrimitiveSceneInfo->StaticMeshes[StaticMeshIdx];
-					if (View.StaticMeshVisibilityMap[StaticMesh.Id])
-					{
-						constexpr uint64 DefaultBatchElementMask = ~0ul;
-						MeshProcessor.AddMeshBatch(StaticMesh, DefaultBatchElementMask, StaticMesh.PrimitiveSceneInfo->Proxy);
-					}
-				}
-			}
-
-			if (ViewRelevance.bRenderInMainPass && ViewRelevance.bDynamicRelevance)
-			{
-				const FInt32Range MeshBatchRange = GetDynamicMeshElementRange(View, PrimitiveSceneInfo->GetIndex());
-				for (int32 MeshBatchIndex = MeshBatchRange.GetLowerBoundValue(); MeshBatchIndex < MeshBatchRange.GetUpperBoundValue(); ++MeshBatchIndex)
-				{
-					const FMeshBatchAndRelevance& MeshAndRelevance = View.DynamicMeshElements[MeshBatchIndex];
-					constexpr uint64 BatchElementMask = ~0ull;
-					MeshProcessor.AddMeshBatch(*MeshAndRelevance.Mesh, BatchElementMask, MeshAndRelevance.PrimitiveSceneProxy);
-				}
-			}
-		}// for PrimitiveIndex
-
-		const FSceneTextures& SceneTextures = GetActiveSceneTextures();
-		
-		// Render targets bindings should remain constant at this point.
-		FRenderTargetBindingSlots BindingSlots;
-		BindingSlots[0] = FRenderTargetBinding(SceneTextures.Color.Target, ERenderTargetLoadAction::ELoad);
-		BindingSlots.DepthStencil = FDepthStencilBinding(
-			SceneTextures.Depth.Target,
-			ERenderTargetLoadAction::ENoAction,
-			ERenderTargetLoadAction::ELoad,
-			FExclusiveDepthStencil::DepthWrite_StencilNop);
-
-		FToonOutlineMeshPassParameters* PassParameters = GraphBuilder.AllocParameters<FToonOutlineMeshPassParameters>();
-		PassParameters->View = View.ViewUniformBuffer;
-		PassParameters->RenderTargets = BindingSlots;
-		PassParameters->Scene = GetSceneUniforms().GetBuffer(GraphBuilder);
-
-		SimpleMeshPass->BuildRenderingCommands(GraphBuilder, View, Scene->GPUScene, PassParameters->InstanceCullingDrawParams);
-
-		FIntRect ViewportRect = View.ViewRect;
-		FIntRect ScissorRect = FIntRect(FIntPoint(EForceInit::ForceInitToZero), SceneColorTexture->Desc.Extent);
-
-		GraphBuilder.AddPass(
-			RDG_EVENT_NAME("ToonOutlinePass"),
-			PassParameters,
-			ERDGPassFlags::Raster,
-			[this, ViewportRect, ScissorRect, SimpleMeshPass, PassParameters](FRHICommandList& RHICmdList)
-			{
-				RHICmdList.SetViewport(
-					ViewportRect.Min.X, ViewportRect.Min.Y, 0.0f,
-					ViewportRect.Max.X, ViewportRect.Max.Y, 1.0f);
-
-				RHICmdList.SetScissorRect(
-					true,
-					ScissorRect.Min.X >= ViewportRect.Min.X ? ScissorRect.Min.X : ViewportRect.Min.X,
-					ScissorRect.Min.Y >= ViewportRect.Min.Y ? ScissorRect.Min.Y : ViewportRect.Min.Y,
-					ScissorRect.Max.X <= ViewportRect.Max.X ? ScissorRect.Max.X : ViewportRect.Max.X,
-					ScissorRect.Max.Y <= ViewportRect.Max.Y ? ScissorRect.Max.Y : ViewportRect.Max.Y);
-
-				SimpleMeshPass->SubmitDraw(RHICmdList, PassParameters->InstanceCullingDrawParams);
-			});
-	} // for View
-}
-
+// 修改引擎源码写法
 /*// Register Pass to Global Manager
 void SetupToonOutLinePassState(FMeshPassProcessorRenderState& DrawRenderState)
 {
@@ -304,13 +306,3 @@ FRegisterPassProcessorCreateFunction RegisteToonOutLineMeshPass(
 	EMeshPassFlags::CachedMeshCommands | EMeshPassFlags::MainView
 );*/
 
-
-void FToonOutlineRenderer::RenderToonOutline(FPostOpaqueRenderParameters& Parameters)
-{
-	Parameters.GraphBuilder;
-	Parameters.View;
-	Parameters.ColorTexture;
-	Parameters.DepthTexture;
-	Parameters.VelocityTexture;
-	Parameters.NormalTexture;
-}

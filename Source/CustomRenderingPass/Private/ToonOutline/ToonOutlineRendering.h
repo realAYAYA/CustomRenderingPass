@@ -16,13 +16,16 @@ class FToonOutlineRenderer
 	
 public:
 
-	void RenderToonOutline(FPostOpaqueRenderParameters& Parameters);
+	void Render(FPostOpaqueRenderParameters& Parameters) const;
+	
 };
 
 
 class FToonOutlineMeshPassProcessor : public FMeshPassProcessor
 {
+	
 public:
+	
 	FToonOutlineMeshPassProcessor(
 		const FScene* Scene,
 		const FSceneView* InViewIfDynamicMeshCommand,
@@ -38,6 +41,7 @@ public:
 	) override final;
 
 private:
+	
 	template<bool bPositionOnly, bool bUsesMobileColorValue>
 	bool Process(
 		const FMeshBatch& MeshBatch,

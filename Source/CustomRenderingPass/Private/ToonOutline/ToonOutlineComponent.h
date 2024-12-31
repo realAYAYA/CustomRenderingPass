@@ -8,11 +8,17 @@
 
 class FToonOutlineMeshSceneProxy : public FSkeletalMeshSceneProxy
 {
+	
+public:
+	
 	FToonOutlineMeshSceneProxy(const USkinnedMeshComponent* Component, FSkeletalMeshRenderData* InSkelMeshRenderData)
 	: FSkeletalMeshSceneProxy(Component, InSkelMeshRenderData)
 	{
-		
+		if (Component)
+			IsMe = true;
 	}
+
+	bool IsMe = false;
 };
 
 
@@ -27,9 +33,7 @@ class UToonOutlineComponent : public UPrimitiveComponent
 public:
 	
 	CUSTOMRENDERINGPASS_API UToonOutlineComponent(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
-	
 	virtual void OnAttachmentChanged() override;
-	
 	virtual FPrimitiveSceneProxy* CreateSceneProxy() override;
 
 private:

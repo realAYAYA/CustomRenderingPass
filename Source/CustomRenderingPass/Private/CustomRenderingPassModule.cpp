@@ -27,7 +27,7 @@ void FCustomRenderingPassModule::StartupModule()
 
 	ToonOutlineRenderer = MakeUnique<FToonOutlineRenderer>();
 	IRendererModule& RendererModule = GetRendererModule();
-	ToonOutlineHandle = RendererModule.RegisterPostOpaqueRenderDelegate(FPostOpaqueRenderDelegate::CreateRaw(ToonOutlineRenderer.Get(), &FToonOutlineRenderer::RenderToonOutline));
+	ToonOutlineHandle = RendererModule.RegisterPostOpaqueRenderDelegate(FPostOpaqueRenderDelegate::CreateRaw(ToonOutlineRenderer.Get(), &FToonOutlineRenderer::Render));
 }
 
 void FCustomRenderingPassModule::ShutdownModule()

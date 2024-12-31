@@ -19,4 +19,6 @@ private:
 
 	TUniquePtr<FToonOutlineRenderer> ToonOutlineRenderer;
 	FDelegateHandle ToonOutlineHandle;
+
+	FDelegateHandle ToonHairShadowHandle;
 };
