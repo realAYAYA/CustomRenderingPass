@@ -15,10 +15,9 @@ public:
 	virtual void StartupModule() override;
 	virtual void ShutdownModule() override;
 
+	TUniquePtr<FToonOutlineRenderer> ToonOutlineRenderer;
+
 private:
 
-	TUniquePtr<FToonOutlineRenderer> ToonOutlineRenderer;
-	FDelegateHandle ToonOutlineHandle;
-
-	FDelegateHandle ToonHairShadowHandle;
+	void OnWorldInit(UWorld* InWorld, const UWorld::InitializationValues InInitializationValues);
 };

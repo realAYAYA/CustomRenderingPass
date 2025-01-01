@@ -1,6 +1,7 @@
 ﻿#include "ToonOutlineComponent.h"
 
 #include "GPUSkinVertexFactory.h"
+#include "SkeletalMeshSceneProxy.h"
 #include "SkeletalRenderPublic.h"
 #include "Rendering/SkeletalMeshRenderData.h"
 
@@ -56,7 +57,7 @@ FPrimitiveSceneProxy* UToonOutlineComponent::CreateSceneProxy()
 		int32 MaxSupportedNumBones = SkeletalMesh->MeshObject->IsCPUSkinned() ? MAX_int32 : FGPUBaseSkinVertexFactory::GetMaxGPUSkinBones();
 		if (MaxBonesPerChunk <= MaxSupportedNumBones)
 		{
-			Result = ::new FToonOutlineMeshSceneProxy(SkeletalMesh, SkelMeshRenderData);
+			Result = ::new FSkeletalMeshSceneProxy(SkeletalMesh, SkelMeshRenderData);
 		}
 	}
 	

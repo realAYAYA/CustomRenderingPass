@@ -3,7 +3,6 @@
 #include "CustomRenderingSetting.h"
 #include "MeshPassProcessor.inl"
 #include "SimpleMeshDrawCommandPass.h"
-#include "ToonOutlineComponent.h"
 #include "Materials/MaterialRenderProxy.h"
 #include "Runtime/Renderer/Private/ScenePrivate.h"
 
@@ -63,6 +62,30 @@ void HandleToonOutlineMeshProcessor(FToonOutlineMeshPassProcessor& MeshProcessor
 				MeshProcessor.AddMeshBatch(*MeshAndRelevance.Mesh, BatchElementMask, MeshAndRelevance.PrimitiveSceneProxy);
 			}
 		}
+	}
+}
+
+IRendererModule* CachedRendererModule = nullptr;
+IRendererModule& GetRendererModule()
+{
+	if (!CachedRendererModule)
+	{
+		CachedRendererModule = &FModuleManager::LoadModuleChecked<IRendererModule>(TEXT("Renderer"));
+	}
+
+	return *CachedRendererModule;
+}
+
+void FToonOutlineRenderer::Setup(const bool bRelease)
+{
+	IRendererModule& RendererModule = GetRendererModule();
+	if (!bRelease && CheckConfig())
+	{
+		ToonOutlineHandle = RendererModule.RegisterPostOpaqueRenderDelegate(FPostOpaqueRenderDelegate::CreateRaw(this, &FToonOutlineRenderer::Render));
+	}
+	else
+	{
+		RendererModule.RemovePostOpaqueRenderDelegate(ToonOutlineHandle);
 	}
 }
 
@@ -139,10 +162,20 @@ void FToonOutlineRenderer::Render(FPostOpaqueRenderParameters& Parameters) const
 		});
 }
 
+bool FToonOutlineRenderer::CheckConfig()
+{
+	if (auto* Mat = UCustomRenderingSetting::Get()->ToonOutlineMaterial.Get())
+	{
+		if (auto* Resource =  Mat->GetMaterialResource(GMaxRHIFeatureLevel, EMaterialQualityLevel::Num))
+			return UCustomRenderingSetting::Get()->bEnableToonOutline;
+	}
+	
+	return false;
+}
 
 
-
-IMPLEMENT_MATERIAL_SHADER_TYPE(, FToonOutlineVS, TEXT("/Plugin/CustomRenderingPass/ToonLitOutLine.usf"), TEXT("MainVS"), SF_Vertex);
+IMPLEMENT_MATERIAL_SHADER_TYPE(, FToonOutlineVS, TEXT("/Plugin/CustomRenderingPass/ToonLitOutLine.usf"), TEXT("MainVS"),
+                                 SF_Vertex);
 IMPLEMENT_MATERIAL_SHADER_TYPE(, FToonOutlinePS, TEXT("/Plugin/CustomRenderingPass/ToonLitOutLine.usf"), TEXT("MainPS"), SF_Pixel);
 
 FToonOutlineMeshPassProcessor::FToonOutlineMeshPassProcessor(
@@ -165,18 +198,13 @@ void FToonOutlineMeshPassProcessor::AddMeshBatch(
 	const FPrimitiveSceneProxy* PrimitiveSceneProxy,
 	int32 StaticMeshId)
 {
-	auto Ptr = UECasts_Private::DynamicCast<const FToonOutlineMeshSceneProxy*>(PrimitiveSceneProxy);
-	if (Ptr && Ptr->IsMe)
-		return;// Filter
-	
 	const FMaterialRenderProxy* MaterialRenderProxy = MeshBatch.MaterialRenderProxy;
 	const FMaterialRenderProxy* FallBackMaterialRenderProxyPtr = nullptr;
 	const FMaterial& Material = MaterialRenderProxy->GetMaterialWithFallback(Scene->GetFeatureLevel(), FallBackMaterialRenderProxyPtr);
+	if (Material.GetShadingModels() != FMaterialShadingModelField(EMaterialShadingModel::MSM_DefaultLit))
+		return;// Only render outline for ToonShadingModel
 
-	auto* Mat = UCustomRenderingSetting::Get()->ToonOutlineMaterial.LoadSynchronous();
-	if (Mat == nullptr)
-		return;
-	
+	auto* Mat = UCustomRenderingSetting::Get()->ToonOutlineMaterial.Get();
 	const FMaterial* OutlineMaterial = Mat->GetMaterialResource(Scene->GetFeatureLevel());
 	const FMaterialRenderProxy* OutlineMaterialRenderProxy = Mat->GetRenderProxy();
 	if (!OutlineMaterial || !OutlineMaterialRenderProxy)

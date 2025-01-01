@@ -16,8 +16,14 @@ class FToonOutlineRenderer
 	
 public:
 
+	void Setup(bool bRelease = false);
 	void Render(FPostOpaqueRenderParameters& Parameters) const;
+
+private:
 	
+	static bool CheckConfig();// 检查ToonOutline是否可行
+	
+	FDelegateHandle ToonOutlineHandle;
 };
 
 

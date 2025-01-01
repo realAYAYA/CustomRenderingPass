@@ -3,27 +3,10 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "SkeletalMeshSceneProxy.h"
 #include "ToonOutlineComponent.generated.h"
 
-class FToonOutlineMeshSceneProxy : public FSkeletalMeshSceneProxy
-{
-	
-public:
-	
-	FToonOutlineMeshSceneProxy(const USkinnedMeshComponent* Component, FSkeletalMeshRenderData* InSkelMeshRenderData)
-	: FSkeletalMeshSceneProxy(Component, InSkelMeshRenderData)
-	{
-		if (Component)
-			IsMe = true;
-	}
-
-	bool IsMe = false;
-};
-
-
 /**
- * 
+ * Abendont now
  */
 UCLASS(ClassGroup=(ToonLit), meta=(BlueprintSpawnableComponent))
 class UToonOutlineComponent : public UPrimitiveComponent
@@ -40,5 +23,7 @@ private:
 
 	UPROPERTY(VisibleAnywhere, Category = "ToonLit")
 	TWeakObjectPtr<USkeletalMeshComponent> SkeletalMeshComponent;
+
+	TSet<FPrimitiveComponentId> ComponentIds;
 };
 

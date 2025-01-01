@@ -25,7 +25,7 @@ class UCustomRenderingSetting : public UDeveloperSettings
 	static UCustomRenderingSetting* Get();
 
 protected:
-	
+
 #if WITH_EDITOR
 	virtual void PreEditChange(FProperty* PropertyAboutToChange) override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
